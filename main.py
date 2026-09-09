@@ -1,78 +1,27 @@
 import streamlit as st
 import requests
+import datetime
 import calendar
-from datetime import datetime, date
 import re
 
 # -----------------------------------------------------------------------------
-# 1. 페이지 설정 및 디자인 CSS 적용
+# 1. 기본 페이지 설정
 # -----------------------------------------------------------------------------
-st.set_page_config(
-    page_title="한 달 급식 달력 & 추천기",
-    page_icon="🍱",
-    layout="wide"
-)
-
-# Custom CSS
-st.markdown("""
-<style>
-    .day-card {
-        border: 1px solid #E0E0E0;
-        border-radius: 8px;
-        padding: 10px;
-        margin-bottom: 15px;
-        background-color: #FFFFFF;
-        min-height: 200px;
-    }
-    .today-card {
-        border: 2px solid #2E7D32 !important;
-        background-color: #F1F8E9 !important;
-    }
-    .date-header {
-        font-weight: bold;
-        font-size: 1.05rem;
-        border-bottom: 1px solid #EEEEEE;
-        padding-bottom: 5px;
-        margin-bottom: 8px;
-    }
-    .today-badge {
-        background-color: #2E7D32;
-        color: white;
-        padding: 2px 6px;
-        border-radius: 4px;
-        font-size: 0.75rem;
-        margin-left: 5px;
-    }
-    .search-highlight-card {
-        border: 2px solid #FF9800 !important;
-        background-color: #FFF8E1 !important;
-    }
-    .recommend-highlight-card {
-        border: 2px solid #E91E63 !important;
-        background-color: #FCE4EC !important;
-    }
-    .meal-title-lunch { color: #1976D2; font-weight: bold; margin-top: 6px; }
-    .meal-title-dinner { color: #D32F2F; font-weight: bold; margin-top: 6px; }
-    .meal-title-other { color: #388E3C; font-weight: bold; margin-top: 6px; }
-    .meal-content { font-size: 0.85rem; line-height: 1.4; color: #333333; }
-    .recommend-badge {
-        display: inline-block;
-        background-color: #E91E63;
-        color: white;
-        font-size: 0.75rem;
-        font-weight: bold;
-        padding: 2px 6px;
-        border-radius: 4px;
-        margin-bottom: 4px;
-    }
-    .no-meal { color: #9E9E9E; font-size: 0.85rem; font-style: italic; }
-</style>
-""", unsafe_allow_html=True)
+st.set_page_config(page_title="월간 학교 급식 달력", page_icon="📅", layout="wide")
+st.title("📅 우리 학교 월간 급식 달력")
+st.caption("급식 메뉴 검색, 이달의 특식 추천, 탄단지 영양 정보까지 한눈에 확인합니다.")
 
 # -----------------------------------------------------------------------------
-# 2. 인기 추천 키워드 및 메뉴 정제 함수 정의
+# 2. 알레르기 및 영양성분/인기 키워드 데이터 정의
 # -----------------------------------------------------------------------------
-# 학생 선호 인기 급식 키워드
+ALLERGY_MAP = {
+    1: "난류", 2: "우유", 3: "메밀", 4: "땅콩", 5: "대두",
+    6: "밀", 7: "고등어", 8: "게", 9: "새우", 10: "돼지고기",
+    11: "복숭아", 12: "토마토", 13: "아황산류", 14: "호두", 15: "닭고기",
+    16: "쇠고기", 17: "오징어", 18: "조개류(굴/전복/홍합 포함)", 19: "잣",
+}
+
+# 인기 메뉴 추천용 키워드
 POPULAR_KEYWORDS = [
     "돈가스", "돈까스", "치킨", "닭강정", "떡볶이", "마라탕", "스파게티", "파스타",
     "피자", "햄버거", "탕수육", "짜장", "짬뽕", "갈비", "불고기", "삼겹살",
@@ -80,279 +29,284 @@ POPULAR_KEYWORDS = [
     "푸딩", "마카롱", "에이드", "빙수", "소떡소떡"
 ]
 
-def clean_menu_only_name(menu_text):
-    """
-    NEIS 급식 메뉴 텍스트에서 알레르기 번호, 특수문자, 괄호 등을 제거하고 
-    순수 메뉴(요리) 이름만 추출합니다.
-    """
-    if not menu_text:
-        return ""
+# 대표 식재료 키워드 기반 탄단지(g) 추정 DB (1인분 기준)
+NUTRIENT_DB = {
+    "밥": (50, 4, 1),
+    "돈가스": (30, 20, 18), "돈까스": (30, 20, 18),
+    "치킨": (15, 22, 16), "닭": (10, 20, 10),
+    "돼지": (5, 18, 15), "제육": (8, 18, 12), "불고기": (8, 18, 10), "갈비": (6, 17, 14),
+    "소고기": (3, 20, 12), "쇠고기": (3, 20, 12),
+    "생선": (3, 16, 6), "오징어": (2, 15, 2), "새우": (2, 14, 1),
+    "두부": (2, 8, 4), "달걀": (1, 6, 5), "계란": (1, 6, 5),
+    "스파게티": (55, 12, 10), "파스타": (55, 12, 10), "짜장": (50, 10, 12), "짬뽕": (45, 12, 8),
+    "떡볶이": (45, 5, 4), "마라탕": (20, 12, 15), "카레": (35, 8, 7),
+    "국": (5, 3, 2), "찌개": (6, 6, 4), "탕": (5, 5, 3),
+    "김치": (3, 1, 0), "나물": (4, 2, 2), "샐러드": (5, 2, 4),
+    "우유": (10, 6, 6), "케이크": (30, 3, 10), "빵": (25, 4, 5)
+}
 
-    # HTML 줄바꿈 태그 변환
-    lines = menu_text.replace("<br/>", "\n").replace("<br>", "\n").split("\n")
-    cleaned_lines = []
-
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-
-        # 1. 괄호 안의 내용 제거 (예: (완), (자율) 등)
-        line = re.sub(r'\(.*?\)', '', line)
-        
-        # 2. 알레르기 숫자 및 마침표 패턴 제거 (예: 1.2.5. 또는 1.5.13 등)
-        line = re.sub(r'[\d\.]+', '', line)
-        
-        # 3. 양옆 공백 및 특수기호 정리
-        line = line.strip()
-        
-        if line:
-            cleaned_lines.append(line)
-
-    return "\n".join(cleaned_lines)
-
-# -----------------------------------------------------------------------------
-# 3. API 데이터 호출 함수
-# -----------------------------------------------------------------------------
-def fetch_meal_data(office_code, school_code, from_ymd, to_ymd):
-    """NEIS 나이스 API를 호출하여 한 달치 급식 데이터를 가져옵니다."""
-    if "NEIS_KEY" not in st.secrets:
-        st.error("🔑 NEIS API 키가 설정되지 않았습니다. `.streamlit/secrets.toml` 파일에 `NEIS_KEY`를 등록해 주세요.")
-        st.stop()
-        
-    api_key = st.secrets["NEIS_KEY"]
-    url = "https://open.neis.go.kr/hub/mealServiceDietInfo"
+def estimate_macronutrients(dish_list):
+    """메뉴 목록에서 키워드를 분석하여 탄단지(g) 합계를 추정합니다."""
+    total_carbs, total_protein, total_fat = 0, 0, 0
+    matched = False
     
-    params = {
-        "KEY": api_key,
-        "Type": "json",
-        "pIndex": 1,
-        "pSize": 100,
-        "ATPT_OFCDC_SC_CODE": office_code,
-        "SD_SCHUL_CODE": school_code,
-        "MLSV_FROM_YMD": from_ymd,
-        "MLSV_TO_YMD": to_ymd
-    }
-    
-    try:
-        response = requests.get(url, params=params, timeout=10)
-        response.raise_for_status()
-        data = response.json()
+    for dish in dish_list:
+        # 알레르기 수식어 및 괄호 제거 후 순수 메뉴명 추출
+        clean_dish = re.sub(r'\(.*?\)|:orange\[.*?\]', '', dish).strip()
+        for kw, (c, p, f) in NUTRIENT_DB.items():
+            if kw in clean_dish:
+                total_carbs += c
+                total_protein += p
+                total_fat += f
+                matched = True
+                break
+                
+    if not matched:
+        # 기본 한 끼 표준 급식 추정치 적용
+        return 70, 22, 15
         
-        if "mealServiceDietInfo" in data:
-            return data["mealServiceDietInfo"][1]["row"]
-        elif "RESULT" in data and data["RESULT"]["CODE"] != "INFO-000":
-            if data["RESULT"]["CODE"] == "INFO-200":
-                return []
-            st.warning(f"API 메시지: {data['RESULT']['MESSAGE']}")
-            return []
-        return []
-        
-    except requests.exceptions.RequestException as e:
-        raise Exception(f"API 통신 실패: 인터넷 연결 또는 NEIS 서버 상태를 확인하세요. ({e})")
-    except Exception as e:
-        raise Exception(f"응답 데이터 처리 중 오류 발생: {e}")
+    return total_carbs, total_protein, total_fat
+
+def replace_allergy_codes(dish_text, convert_to_text=True):
+    """메뉴명 뒤의 알레르기 번호를 감지하여 한글 식재료명으로 치환하거나 제거합니다."""
+    if not dish_text:
+        return dish_text
+
+    def convert_match(match):
+        raw = match.group(0)
+        nums = re.findall(r"\d+", raw)
+        if convert_to_text:
+            allergens = [ALLERGY_MAP[int(n)] for n in nums if int(n) in ALLERGY_MAP]
+            if allergens:
+                return f" :orange[[{', '.join(allergens)}]]"
+            return raw
+        else:
+            return "" # 알레르기 표기 미사용 시 제거
+
+    pattern = r"\(?(\d+\.)+\)?"
+    return re.sub(pattern, convert_match, dish_text)
 
 # -----------------------------------------------------------------------------
-# 4. 사이드바 구성
+# 3. 사이드바 설정
 # -----------------------------------------------------------------------------
-st.sidebar.title("🏫 학교 및 설정")
+st.sidebar.header("⚙️ 학교 정보 설정")
+office_code = st.sidebar.text_input("시도교육청코드", value="T10", help="기본값: 제주특별자치도교육청(T10)")
+school_code = st.sidebar.text_input("표준학교코드", value="9290088", help="기본값: 제주중앙고등학교(9290088)")
 
-office_code = st.sidebar.text_input("시도교육청코드", value="B10")
-school_code = st.sidebar.text_input("표준학교코드", value="7010057")
+st.sidebar.markdown("---")
+st.sidebar.subheader("🍽️ 급식 및 영양 설정")
+show_allergen_names = st.sidebar.toggle(
+    "알레르기 식품명 표시", value=True,
+    help="체크 시 숫자(예: 1. 5.) 대신 [난류, 대두] 형태로 변환하여 표시합니다.",
+)
+show_macros = st.sidebar.toggle(
+    "탄단지 추정 정보 표시", value=True,
+    help="식단 메뉴 기반으로 예상 탄수화물, 단백질, 지방 함량(g)을 표시합니다.",
+)
+
+with st.sidebar.expander("📖 나이스 알레르기 번호 안내표"):
+    table_md = "\n".join([f"- **{k}번**: {v}" for k, v in ALLERGY_MAP.items()])
+    st.markdown(table_md)
 
 # -----------------------------------------------------------------------------
-# 5. 상단 메뉴 설정 (연도, 월, 급식 종류)
+# 4. 필터 및 검색/추천 섹션
 # -----------------------------------------------------------------------------
-st.title("🍱 우리 학교 한 달 급식 달력")
-
-today = date.today()
-
-col1, col2, col3 = st.columns([1, 1, 2])
-
-with col1:
-    selected_year = st.selectbox("연도 선택", range(today.year - 1, today.year + 2), index=1)
-
-with col2:
-    selected_month = st.selectbox("월 선택", range(1, 13), index=today.month - 1)
-
-with col3:
-    meal_type_filter = st.radio(
-        "급식 종류",
-        ["전체 보기", "중식만 보기", "석식만 보기"],
-        horizontal=True
+today = datetime.date.today()
+col_y, col_m, col_filter = st.columns([1, 1, 2])
+with col_y:
+    year = st.selectbox("연도 선택", options=list(range(today.year - 1, today.year + 2)), index=1)
+with col_m:
+    month = st.selectbox("월 선택", options=list(range(1, 13)), index=today.month - 1)
+with col_filter:
+    meal_filter = st.radio(
+        "급식 종류 선택", options=["전체 보기", "중식만 보기", "석식만 보기"], index=0, horizontal=True,
     )
 
-st.markdown("---")
+# 🔍 검색 & 추천 UI 추가
+col_search, col_rec = st.columns([2, 1])
+with col_search:
+    search_keyword = st.text_input("🔍 급식 메뉴 검색", placeholder="예: 돈까스, 스파게티, 닭갈비").strip()
+
+with col_rec:
+    st.write("✨ **인기 급식 추천**")
+    btn_recommend = st.button("👑 이달의 특식/추천 메뉴 보기", use_container_width=True)
 
 # -----------------------------------------------------------------------------
-# 6. 달력 데이터 조회 및 추천 키워드 매칭
+# 5. API 데이터 호출 함수
 # -----------------------------------------------------------------------------
-_, last_day = calendar.monthrange(selected_year, selected_month)
-from_ymd = f"{selected_year}{selected_month:02d}01"
-to_ymd = f"{selected_year}{selected_month:02d}{last_day:02d}"
+def fetch_monthly_meals(key, ofcdc_code, schul_code, yr, mo):
+    """선택한 월의 1일부터 말일까지의 급식을 조회합니다."""
+    _, last_day = calendar.monthrange(yr, mo)
+    from_ymd = f"{yr}{mo:02d}01"
+    to_ymd = f"{yr}{mo:02d}{last_day:02d}"
 
-meal_dict = {}
-try:
-    meal_rows = fetch_meal_data(office_code, school_code, from_ymd, to_ymd)
-    
-    for row in meal_rows:
-        ymd = row["MLSV_YMD"]
-        meal_name = row["MMEAL_SC_NM"]  # 조식/중식/석식
-        dish_name = row["DDISH_NM"]     # 식단 메뉴
-        
-        if ymd not in meal_dict:
-            meal_dict[ymd] = {}
-            
-        meal_dict[ymd][meal_name] = dish_name
+    url = "https://open.neis.go.kr/hub/mealServiceDietInfo"
+    params = {
+        "KEY": key, "Type": "json", "pIndex": 1, "pSize": 100,
+        "ATPT_OFCDC_SC_CODE": ofcdc_code, "SD_SCHUL_CODE": schul_code,
+        "MLSV_FROM_YMD": from_ymd, "MLSV_TO_YMD": to_ymd,
+    }
+    response = requests.get(url, params=params, timeout=7)
+    return response.json()
 
-except Exception as api_err:
-    st.error(f"❌ [API 통신 오류] {api_err}")
+if "NEIS_KEY" not in st.secrets:
+    st.error("⚠️ Streamlit Secrets에 `NEIS_KEY`가 설정되어 있지 않습니다.")
     st.stop()
 
-# -----------------------------------------------------------------------------
-# 7. 검색 및 추천 제어 섹션
-# -----------------------------------------------------------------------------
-search_col, recommend_col = st.columns([2, 1])
+neis_key = st.secrets["NEIS_KEY"]
 
-with search_col:
-    search_keyword = st.text_input("🔍 급식 메뉴 검색 (예: 돈까스, 닭갈비, 케이크)", "").strip()
-
-with recommend_col:
-    st.write("✨ **오늘의 추천 기능**")
-    btn_recommend = st.button("👑 이번 달 특식/인기 메뉴 추천받기", use_container_width=True)
-
-# 💡 추천 급식 날짜 및 메인 요리 분석
-recommended_days = {}
-for ymd_key, day_meals in meal_dict.items():
-    for m_name, dish_str in day_meals.items():
-        found_popular = [kw for kw in POPULAR_KEYWORDS if kw in dish_str]
-        if found_popular:
-            if ymd_key not in recommended_days:
-                recommended_days[ymd_key] = []
-            recommended_days[ymd_key].extend(found_popular)
-
-if btn_recommend:
-    if recommended_days:
-        st.balloons()
-        st.subheader("🎉 이번 달 추천 특식 날짜!")
-        rec_info_list = []
-        for r_ymd, kw_list in sorted(recommended_days.items()):
-            r_month = int(r_ymd[4:6])
-            r_day = int(r_ymd[6:8])
-            unique_kws = list(set(kw_list))
-            rec_info_list.append(f"• **{r_month}월 {r_day}일**: {', '.join(unique_kws)}")
-        st.success("\n".join(rec_info_list))
-    else:
-        st.warning("이달의 자동 등록된 인기 키워드 메뉴가 없습니다.")
-
-# -----------------------------------------------------------------------------
-# 8. 주간 달력 렌더링
-# -----------------------------------------------------------------------------
 try:
-    cal = calendar.Calendar(firstweekday=0)
-    month_days = cal.monthdayscalendar(selected_year, selected_month)
-    weekday_names = ["월", "화", "수", "목", "금"]
+    with st.spinner(f"{year}년 {month}월 급식 정보를 불러오는 중..."):
+        res_data = fetch_monthly_meals(neis_key, office_code, school_code, year, month)
 
+    meal_dict = {}
+    recommended_days = {} # {ymd: [인기키워드]}
+
+    if "mealServiceDietInfo" in res_data:
+        rows = res_data["mealServiceDietInfo"][1]["row"]
+        for row in rows:
+            ymd = row.get("MLSV_YMD")
+            meal_type = row.get("MMEAL_SC_NM", "급식")
+            dish = row.get("DDISH_NM", "")
+
+            # 인기 특식 키워드 감지
+            found_popular = [kw for kw in POPULAR_KEYWORDS if kw in dish]
+            if found_popular:
+                recommended_days.setdefault(ymd, []).extend(found_popular)
+
+            formatted_dish = replace_allergy_codes(dish, convert_to_text=show_allergen_names)
+            dish_lines = [d.strip() for d in formatted_dish.replace("<br/>", "\n").split("\n") if d.strip()]
+
+            meal_dict.setdefault(ymd, {})[meal_type] = dish_lines
+
+    # 추천 버튼 클릭 이벤트 처리
+    if btn_recommend:
+        if recommended_days:
+            st.balloons()
+            st.subheader(f"🎉 {year}년 {month}월 추천 특식 제공일")
+            rec_text = []
+            for r_ymd, kws in sorted(recommended_days.items()):
+                m_val = int(r_ymd[4:6])
+                d_val = int(r_ymd[6:8])
+                unique_kws = list(set(kws))
+                rec_text.append(f"• **{m_val}월 {d_val}일**: {', '.join(unique_kws)}")
+            st.success("\n".join(rec_text))
+        else:
+            st.info("이달에는 등록된 대표 인기 특식 메뉴가 없습니다.")
+
+    month_cal = calendar.monthcalendar(year, month)
+    weekdays_kr = ["월", "화", "수", "목", "금"]
+
+    # 검색 결과 안내
     if search_keyword:
-        matched_count = sum(
+        match_count = sum(
             1 for day_meals in meal_dict.values()
-            for dish_str in day_meals.values()
-            if search_keyword.lower() in dish_str.lower()
+            for dishes in day_meals.values()
+            for d in dishes if search_keyword.lower() in d.lower()
         )
-        st.info(f"💡 **'{search_keyword}'** 검색 결과: 총 **{matched_count}회** 등장합니다. (주황색 테두리 표시)")
+        st.info(f"🔍 **'{search_keyword}'** 검색 결과: 총 **{match_count}개**의 메뉴가 검색되었습니다.")
 
-    for week in month_days:
-        workdays = week[:5]
-        if sum(workdays) == 0:
-            continue
-            
+    st.markdown("---")
+
+    # -------------------------------------------------------------------------
+    # 6. 주간 달력 출력
+    # -------------------------------------------------------------------------
+    for week in month_cal:
         cols = st.columns(5)
-        
-        for idx, day_num in enumerate(workdays):
-            with cols[idx]:
-                if day_num == 0:
-                    st.write("")
-                    continue
-                
-                curr_date = date(selected_year, selected_month, day_num)
-                ymd_str = curr_date.strftime("%Y%m%d")
-                
-                is_today = (curr_date == today)
-                is_recommended = ymd_str in recommended_days
-                
-                # 검색어 포함 여부 체크
-                contains_search = False
-                if search_keyword and ymd_str in meal_dict:
-                    for dish_str in meal_dict[ymd_str].values():
-                        if search_keyword.lower() in dish_str.lower():
-                            contains_search = True
-                            break
-                
-                # 카드 스타일 결정
-                if contains_search:
-                    card_class = "day-card search-highlight-card"
-                elif is_recommended:
-                    card_class = "day-card recommend-highlight-card"
-                elif is_today:
-                    card_class = "day-card today-card"
-                else:
-                    card_class = "day-card"
-                    
-                today_badge_html = '<span class="today-badge">TODAY</span>' if is_today else ''
-                rec_badge_html = '<span class="recommend-badge">👑 강추!</span><br/>' if is_recommended else ''
-                
-                header_html = f"""
-                <div class="{card_class}">
-                    {rec_badge_html}
-                    <div class="date-header">
-                        {selected_month}/{day_num} ({weekday_names[idx]}) {today_badge_html}
-                    </div>
-                """
-                
-                body_html = ""
-                
-                if ymd_str in meal_dict:
-                    day_meals = meal_dict[ymd_str]
-                    has_matching_meal = False
-                    
-                    for meal_name, raw_menu in day_meals.items():
-                        if meal_type_filter == "중식만 보기" and meal_name != "중식":
-                            continue
-                        if meal_type_filter == "석식만 보기" and meal_name != "석식":
-                            continue
-                            
-                        has_matching_meal = True
-                        
-                        if meal_name == "중식":
-                            title_class = "meal-title-lunch"
-                        elif meal_name == "석식":
-                            title_class = "meal-title-dinner"
-                        else:
-                            title_class = "meal-title-other"
-                            
-                        # 오직 메뉴 이름만 깔끔하게 정제
-                        processed_menu = clean_menu_only_name(raw_menu)
-                        
-                        # 검색어가 포함된 경우 노란색 하이라이트
-                        if search_keyword and search_keyword.lower() in processed_menu.lower():
-                            pattern = re.compile(re.escape(search_keyword), re.IGNORECASE)
-                            processed_menu = pattern.sub(f"<mark>{search_keyword}</mark>", processed_menu)
-                            
-                        formatted_menu = processed_menu.replace('\n', '<br/>')
-                        
-                        body_html += f"""
-                        <div class="{title_class}">[{meal_name}]</div>
-                        <div class="meal-content">{formatted_menu}</div>
-                        """
-                        
-                    if not has_matching_meal:
-                        body_html += '<div class="no-meal">해당 식단 없음</div>'
-                else:
-                    body_html += '<div class="no-meal">급식 없음</div>'
-                    
-                footer_html = "</div>"
-                st.markdown(header_html + body_html + footer_html, unsafe_allow_html=True)
+        has_school_day = False
 
-except Exception as ui_err:
-    st.error(f"⚠️ [화면 구성 오류] 달력을 출력하는 동안 오류가 발생했습니다. ({ui_err})")
+        for i in range(5):
+            day = week[i]
+            with cols[i]:
+                if day == 0:
+                    st.empty()
+                else:
+                    has_school_day = True
+                    ymd_str = f"{year}{month:02d}{day:02d}"
+                    day_meals = meal_dict.get(ymd_str, {})
+                    is_today = (year == today.year and month == today.month and day == today.day)
+                    is_rec_day = ymd_str in recommended_days
+
+                    # 검색어 일치 여부 확인
+                    has_search_match = False
+                    if search_keyword and day_meals:
+                        for dishes in day_meals.values():
+                            if any(search_keyword.lower() in d.lower() for d in dishes):
+                                has_search_match = True
+                                break
+
+                    with st.container(border=True):
+                        # 날짜 헤더 및 배지 표시
+                        header_str = f"**{month}월 {day}일 ({weekdays_kr[i]})**"
+                        if is_today:
+                            header_str += " :orange-background[**TODAY**]"
+                        if is_rec_day:
+                            header_str += " ⭐"
+                        if has_search_match:
+                            header_str += " 🔍"
+                        
+                        st.markdown(header_str)
+                        st.divider()
+
+                        if not day_meals:
+                            st.caption("급식 없음 (휴업/방학)")
+                        else:
+                            displayed_count = 0
+
+                            # 중식 출력
+                            if meal_filter in ["전체 보기", "중식만 보기"] and "중식" in day_meals:
+                                displayed_count += 1
+                                st.markdown(":blue[**🍚 중식**]")
+                                for dish in day_meals["중식"]:
+                                    if search_keyword and search_keyword.lower() in dish.lower():
+                                        st.markdown(f"<span style='font-size:0.85rem; background-color:#FFE082;'>• {dish}</span>", unsafe_allow_html=True)
+                                    else:
+                                        st.markdown(f"<span style='font-size:0.85rem;'>• {dish}</span>", unsafe_allow_html=True)
+                                
+                                # 탄단지 함량 추정 표시
+                                if show_macros:
+                                    c, p, f = estimate_macronutrients(day_meals["중식"])
+                                    st.caption(f"📊 예상 탄: {c}g | 단: {p}g | 지: {f}g")
+
+                            # 석식 출력
+                            if meal_filter in ["전체 보기", "석식만 보기"] and "석식" in day_meals:
+                                displayed_count += 1
+                                if meal_filter == "전체 보기" and "중식" in day_meals:
+                                    st.write("")
+                                st.markdown(":red[**🌙 석식**]")
+                                for dish in day_meals["석식"]:
+                                    if search_keyword and search_keyword.lower() in dish.lower():
+                                        st.markdown(f"<span style='font-size:0.85rem; background-color:#FFE082;'>• {dish}</span>", unsafe_allow_html=True)
+                                    else:
+                                        st.markdown(f"<span style='font-size:0.85rem;'>• {dish}</span>", unsafe_allow_html=True)
+                                
+                                # 탄단지 함량 추정 표시
+                                if show_macros:
+                                    c, p, f = estimate_macronutrients(day_meals["석식"])
+                                    st.caption(f"📊 예상 탄: {c}g | 단: {p}g | 지: {f}g")
+
+                            # 기타 급식(조식 등) 출력
+                            if meal_filter == "전체 보기":
+                                for m_type, dishes in day_meals.items():
+                                    if m_type not in ["중식", "석식"]:
+                                        displayed_count += 1
+                                        st.markdown(f":green[**🍴 {m_type}**]")
+                                        for dish in dishes:
+                                            if search_keyword and search_keyword.lower() in dish.lower():
+                                                st.markdown(f"<span style='font-size:0.85rem; background-color:#FFE082;'>• {dish}</span>", unsafe_allow_html=True)
+                                            else:
+                                                st.markdown(f"<span style='font-size:0.85rem;'>• {dish}</span>", unsafe_allow_html=True)
+                                        if show_macros:
+                                            c, p, f = estimate_macronutrients(dishes)
+                                            st.caption(f"📊 예상 탄: {c}g | 단: {p}g | 지: {f}g")
+
+                            if displayed_count == 0:
+                                st.caption("해당 식단 없음")
+
+        if has_school_day:
+            st.write("")
+
+except requests.exceptions.RequestException as e:
+    st.error(f"⚠️ 나이스 API 통신 오류: 네트워크 상태를 확인해 주세요. ({e})")
+except Exception as e:
+    st.error(f"⚠️ 화면 구성 중 오류가 발생했습니다: {e}")
