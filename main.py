@@ -9,7 +9,7 @@ import re
 # -----------------------------------------------------------------------------
 st.set_page_config(page_title="월간 학교 급식 달력", page_icon="📅", layout="wide")
 st.title("📅 우리 학교 월간 급식 달력")
-st.caption("급식 메뉴 검색, 이달의 특식 추천, 탄단지 영양 정보까지 한눈에 확인합니다.")
+st.caption("급식 메뉴 검색, 이달의 특식 추천, 탄단지 영양 정보 및 황금 밸런스 식단까지 한눈에 확인합니다.")
 
 # -----------------------------------------------------------------------------
 # 2. 알레르기 및 영양성분/인기 키워드 데이터 정의
@@ -51,7 +51,6 @@ def estimate_macronutrients(dish_list):
     matched = False
     
     for dish in dish_list:
-        # 알레르기 수식어 및 괄호 제거 후 순수 메뉴명 추출
         clean_dish = re.sub(r'\(.*?\)|:orange\[.*?\]', '', dish).strip()
         for kw, (c, p, f) in NUTRIENT_DB.items():
             if kw in clean_dish:
@@ -62,10 +61,30 @@ def estimate_macronutrients(dish_list):
                 break
                 
     if not matched:
-        # 기본 한 끼 표준 급식 추정치 적용
         return 70, 22, 15
         
     return total_carbs, total_protein, total_fat
+
+def calculate_balance_score(c, p, f):
+    """
+    탄수화물(4kcal/g), 단백질(4kcal/g), 지방(9kcal/g) 칼로리 비율 계산
+    이상적 영양성분 비율(탄 55% : 단 20% : 지 25%)과의 이격도를 측정하여 점수 산출
+    """
+    c_cal = c * 4
+    p_cal = p * 4
+    f_cal = f * 9
+    total_cal = c_cal + p_cal + f_cal
+    
+    if total_cal == 0:
+        return 0
+        
+    c_ratio = c_cal / total_cal
+    p_ratio = p_cal / total_cal
+    f_ratio = f_cal / total_cal
+    
+    # 목표 비율과의 편차 오차 계산 (낮을수록 완벽에 가까움)
+    diff = abs(c_ratio - 0.55) + abs(p_ratio - 0.20) + abs(f_ratio - 0.25)
+    return round(100 - (diff * 100), 1)
 
 def replace_allergy_codes(dish_text, convert_to_text=True):
     """메뉴명 뒤의 알레르기 번호를 감지하여 한글 식재료명으로 치환하거나 제거합니다."""
@@ -81,7 +100,7 @@ def replace_allergy_codes(dish_text, convert_to_text=True):
                 return f" :orange[[{', '.join(allergens)}]]"
             return raw
         else:
-            return "" # 알레르기 표기 미사용 시 제거
+            return ""
 
     pattern = r"\(?(\d+\.)+\)?"
     return re.sub(pattern, convert_match, dish_text)
@@ -122,7 +141,7 @@ with col_filter:
         "급식 종류 선택", options=["전체 보기", "중식만 보기", "석식만 보기"], index=0, horizontal=True,
     )
 
-# 🔍 검색 & 추천 UI 추가
+# 🔍 검색 & 추천 UI
 col_search, col_rec = st.columns([2, 1])
 with col_search:
     search_keyword = st.text_input("🔍 급식 메뉴 검색", placeholder="예: 돈까스, 스파게티, 닭갈비").strip()
@@ -132,10 +151,9 @@ with col_rec:
     btn_recommend = st.button("👑 이달의 특식/추천 메뉴 보기", use_container_width=True)
 
 # -----------------------------------------------------------------------------
-# 5. API 데이터 호출 함수
+# 5. API 데이터 호출 및 영양 밸런스 최고 식단 분석
 # -----------------------------------------------------------------------------
 def fetch_monthly_meals(key, ofcdc_code, schul_code, yr, mo):
-    """선택한 월의 1일부터 말일까지의 급식을 조회합니다."""
     _, last_day = calendar.monthrange(yr, mo)
     from_ymd = f"{yr}{mo:02d}01"
     to_ymd = f"{yr}{mo:02d}{last_day:02d}"
@@ -160,7 +178,11 @@ try:
         res_data = fetch_monthly_meals(neis_key, office_code, school_code, year, month)
 
     meal_dict = {}
-    recommended_days = {} # {ymd: [인기키워드]}
+    recommended_days = {} 
+    
+    # 최고 영양 밸런스 식단 추적용 변수
+    best_balanced_key = None # (ymd, meal_type)
+    highest_score = -1
 
     if "mealServiceDietInfo" in res_data:
         rows = res_data["mealServiceDietInfo"][1]["row"]
@@ -169,7 +191,7 @@ try:
             meal_type = row.get("MMEAL_SC_NM", "급식")
             dish = row.get("DDISH_NM", "")
 
-            # 인기 특식 키워드 감지
+            # 특식 키워드 감지
             found_popular = [kw for kw in POPULAR_KEYWORDS if kw in dish]
             if found_popular:
                 recommended_days.setdefault(ymd, []).extend(found_popular)
@@ -179,7 +201,13 @@ try:
 
             meal_dict.setdefault(ymd, {})[meal_type] = dish_lines
 
-    # 추천 버튼 클릭 이벤트 처리
+            # 영양 밸런스 점수 산출
+            c, p, f = estimate_macronutrients(dish_lines)
+            score = calculate_balance_score(c, p, f)
+            if score > highest_score:
+                highest_score = score
+                best_balanced_key = (ymd, meal_type)
+
     if btn_recommend:
         if recommended_days:
             st.balloons()
@@ -197,7 +225,6 @@ try:
     month_cal = calendar.monthcalendar(year, month)
     weekdays_kr = ["월", "화", "수", "목", "금"]
 
-    # 검색 결과 안내
     if search_keyword:
         match_count = sum(
             1 for day_meals in meal_dict.values()
@@ -227,7 +254,6 @@ try:
                     is_today = (year == today.year and month == today.month and day == today.day)
                     is_rec_day = ymd_str in recommended_days
 
-                    # 검색어 일치 여부 확인
                     has_search_match = False
                     if search_keyword and day_meals:
                         for dishes in day_meals.values():
@@ -236,7 +262,6 @@ try:
                                 break
 
                     with st.container(border=True):
-                        # 날짜 헤더 및 배지 표시
                         header_str = f"**{month}월 {day}일 ({weekdays_kr[i]})**"
                         if is_today:
                             header_str += " :orange-background[**TODAY**]"
@@ -253,44 +278,59 @@ try:
                         else:
                             displayed_count = 0
 
-                            # 중식 출력
+                            # 중식
                             if meal_filter in ["전체 보기", "중식만 보기"] and "중식" in day_meals:
                                 displayed_count += 1
-                                st.markdown(":blue[**🍚 중식**]")
+                                is_best = (best_balanced_key == (ymd_str, "중식"))
+                                
+                                title_str = ":blue[**🍚 중식**]"
+                                if is_best:
+                                    title_str += " :green-background[**🏆 황금 밸런스 식단**]"
+                                st.markdown(title_str)
+
                                 for dish in day_meals["중식"]:
                                     if search_keyword and search_keyword.lower() in dish.lower():
                                         st.markdown(f"<span style='font-size:0.85rem; background-color:#FFE082;'>• {dish}</span>", unsafe_allow_html=True)
                                     else:
                                         st.markdown(f"<span style='font-size:0.85rem;'>• {dish}</span>", unsafe_allow_html=True)
                                 
-                                # 탄단지 함량 추정 표시
                                 if show_macros:
                                     c, p, f = estimate_macronutrients(day_meals["중식"])
                                     st.caption(f"📊 예상 탄: {c}g | 단: {p}g | 지: {f}g")
 
-                            # 석식 출력
+                            # 석식
                             if meal_filter in ["전체 보기", "석식만 보기"] and "석식" in day_meals:
                                 displayed_count += 1
                                 if meal_filter == "전체 보기" and "중식" in day_meals:
                                     st.write("")
-                                st.markdown(":red[**🌙 석식**]")
+                                
+                                is_best = (best_balanced_key == (ymd_str, "석식"))
+                                title_str = ":red[**🌙 석식**]"
+                                if is_best:
+                                    title_str += " :green-background[**🏆 황금 밸런스 식단**]"
+                                st.markdown(title_str)
+
                                 for dish in day_meals["석식"]:
                                     if search_keyword and search_keyword.lower() in dish.lower():
                                         st.markdown(f"<span style='font-size:0.85rem; background-color:#FFE082;'>• {dish}</span>", unsafe_allow_html=True)
                                     else:
                                         st.markdown(f"<span style='font-size:0.85rem;'>• {dish}</span>", unsafe_allow_html=True)
                                 
-                                # 탄단지 함량 추정 표시
                                 if show_macros:
                                     c, p, f = estimate_macronutrients(day_meals["석식"])
                                     st.caption(f"📊 예상 탄: {c}g | 단: {p}g | 지: {f}g")
 
-                            # 기타 급식(조식 등) 출력
+                            # 기타 급식
                             if meal_filter == "전체 보기":
                                 for m_type, dishes in day_meals.items():
                                     if m_type not in ["중식", "석식"]:
                                         displayed_count += 1
-                                        st.markdown(f":green[**🍴 {m_type}**]")
+                                        is_best = (best_balanced_key == (ymd_str, m_type))
+                                        title_str = f":green[**🍴 {m_type}**]"
+                                        if is_best:
+                                            title_str += " :green-background[**🏆 황금 밸런스 식단**]"
+                                        st.markdown(title_str)
+
                                         for dish in dishes:
                                             if search_keyword and search_keyword.lower() in dish.lower():
                                                 st.markdown(f"<span style='font-size:0.85rem; background-color:#FFE082;'>• {dish}</span>", unsafe_allow_html=True)
