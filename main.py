@@ -22,7 +22,7 @@ st.markdown("""
         padding: 10px;
         margin-bottom: 15px;
         background-color: #FFFFFF;
-        min-height: 220px;
+        min-height: 240px;
     }
     .today-card {
         border: 2px solid #2E7D32 !important;
@@ -53,19 +53,20 @@ st.markdown("""
     .meal-content { font-size: 0.85rem; line-height: 1.35; color: #333333; }
     .nutr-badge {
         font-size: 0.75rem;
-        color: #555555;
-        background-color: #F5F5F5;
+        color: #2E7D32;
+        background-color: #E8F5E9;
         border-radius: 4px;
-        padding: 3px 6px;
-        margin-top: 4px;
-        border: 1px solid #E0E0E0;
+        padding: 4px 6px;
+        margin-top: 6px;
+        border: 1px solid #C8E6C9;
+        line-height: 1.3;
     }
     .no-meal { color: #9E9E9E; font-size: 0.85rem; font-style: italic; }
 </style>
 """, unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
-# 2. 알레르기 및 영양성분 파싱 함수
+# 2. 알레르기 및 영양성분 파싱 함수 (강화 버전)
 # -----------------------------------------------------------------------------
 ALLERGY_DICT = {
     "1": "난류", "2": "우유", "3": "메밀", "4": "땅콩", "5": "대두",
@@ -99,26 +100,38 @@ def replace_allergy_numbers(menu_text, convert=True):
 
 def parse_nutrition_info(nutr_str, cal_str):
     """
-    NEIS API의 영양정보(NUTR_INFO)와 칼로리정보(CAL_INFO) 문자열에서
-    열량, 탄수화물, 단백질, 지방 수치를 추출합니다.
+    NEIS API 영양정보(NUTR_INFO)와 칼로리정보(CAL_INFO)를 파싱하여 탄단지 및 칼로리를 반환합니다.
+    다양한 예외 포맷(줄바꿈, 띄어쓰기 등)을 모두 지원합니다.
     """
-    if not nutr_str:
-        return ""
+    if not nutr_str and not cal_str:
+        return "영양정보 없음"
     
-    # <br/> 태그 정제
-    clean_nutr = nutr_str.replace("<br/>", " ")
+    # 태그 및 불필요 문법 정리
+    clean_nutr = nutr_str.replace("<br/>", " ").replace("\n", " ").replace("\r", " ") if nutr_str else ""
     
-    # 정규표현식을 활용한 수치 추출
-    carb = re.search(r'탄수화물\s*\([gG]\)\s*:\s*([\d\.]+)', clean_nutr)
-    protein = re.search(r'단백질\s*\([gG]\)\s*:\s*([\d\.]+)', clean_nutr)
-    fat = re.search(r'지방\s*\([gG]\)\s*:\s*([\d\.]+)', clean_nutr)
+    # 탄수화물, 단백질, 지방 유연한 정규표현식 추출 (유닛 g 및 공백 유무에 유연하게 대응)
+    carb = re.search(r'탄수화물\s*\(?[gG]?\)?\s*[:\s]\s*([\d\.]+)', clean_nutr)
+    protein = re.search(r'단백질\s*\(?[gG]?\)?\s*[:\s]\s*([\d\.]+)', clean_nutr)
+    fat = re.search(r'지방\s*\(?[gG]?\)?\s*[:\s]\s*([\d\.]+)', clean_nutr)
     
-    carb_val = carb.group(1) if carb else "-"
-    protein_val = protein.group(1) if protein else "-"
-    fat_val = fat.group(1) if fat else "-"
-    cal_val = cal_str if cal_str else "-"
+    carb_val = f"{carb.group(1)}g" if carb else None
+    protein_val = f"{protein.group(1)}g" if protein else None
+    fat_val = f"{fat.group(1)}g" if fat else None
+    cal_val = cal_str if cal_str else ""
 
-    return f"🔥 {cal_val} | 🌾탄: {carb_val}g | 🥩단: {protein_val}g | 🥑지: {fat_val}g"
+    # 세 파라미터가 모두 정상 추출된 경우
+    if carb_val and protein_val and fat_val:
+        return f"🔥 {cal_val}<br/>🌾탄: {carb_val} | 🥩단: {protein_val} | 🥑지: {fat_val}"
+    
+    # 만약 정규식 파싱 실패 시 원본 문자열에서 주요 단어만 요약하여 보여줌
+    if clean_nutr:
+        # 주요 영양소 항목 텍스트 축약
+        short_info = clean_nutr
+        for old, new in [("탄수화물(g)", "탄"), ("단백질(g)", "단"), ("지방(g)", "지"), (" : ", ":")]:
+            short_info = short_info.replace(old, new)
+        return f"🔥 {cal_val}<br/>{short_info[:60]}..." if cal_val else short_info[:80]
+
+    return f"🔥 {cal_val}" if cal_val else "영양정보 없음"
 
 # -----------------------------------------------------------------------------
 # 3. API 데이터 호출 함수
@@ -204,7 +217,7 @@ with col3:
         horizontal=True
     )
 
-# 🔍 메뉴 검색 입력창 추가
+# 🔍 메뉴 검색 입력창
 search_keyword = st.text_input("🔍 급식 메뉴 검색 (예: 돈까스, 닭갈비, 케이크)", "").strip()
 
 st.markdown("---")
@@ -224,6 +237,8 @@ try:
         ymd = row["MLSV_YMD"]
         meal_name = row["MMEAL_SC_NM"]  # 조식/중식/석식
         dish_name = row["DDISH_NM"]     # 식단 메뉴
+        
+        # NEIS API 필드 추출 (없을 경우 빈값 처리)
         nutr_info = row.get("NUTR_INFO", "")
         cal_info = row.get("CAL_INFO", "")
         
@@ -323,7 +338,7 @@ try:
                         raw_menu = meal_info["dish"]
                         processed_menu = replace_allergy_numbers(raw_menu, convert_allergy)
                         
-                        # 검색어가 포함된 메뉴명 하이라이트 (노란 배경)
+                        # 검색어가 포함된 메뉴명 하이라이트
                         if search_keyword and search_keyword.lower() in processed_menu.lower():
                             pattern = re.compile(re.escape(search_keyword), re.IGNORECASE)
                             processed_menu = pattern.sub(f"<mark>{search_keyword}</mark>", processed_menu)
@@ -335,7 +350,7 @@ try:
                         <div class="meal-content">{formatted_menu}</div>
                         """
                         
-                        # 영양성분 표시 옵션 처리
+                        # 영양성분 표시 옵션
                         if show_nutrition and meal_info["nutr"]:
                             body_html += f'<div class="nutr-badge">{meal_info["nutr"]}</div>'
                         
