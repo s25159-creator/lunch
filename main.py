@@ -3,7 +3,6 @@ import requests
 import calendar
 from datetime import datetime, date
 import re
-import random
 
 # -----------------------------------------------------------------------------
 # 1. 페이지 설정 및 디자인 CSS 적용
@@ -55,7 +54,7 @@ st.markdown("""
     .meal-title-lunch { color: #1976D2; font-weight: bold; margin-top: 6px; }
     .meal-title-dinner { color: #D32F2F; font-weight: bold; margin-top: 6px; }
     .meal-title-other { color: #388E3C; font-weight: bold; margin-top: 6px; }
-    .meal-content { font-size: 0.85rem; line-height: 1.35; color: #333333; }
+    .meal-content { font-size: 0.85rem; line-height: 1.4; color: #333333; }
     .recommend-badge {
         display: inline-block;
         background-color: #E91E63;
@@ -71,7 +70,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
-# 2. 알레르기 및 주요 추천 키워드 정의
+# 2. 알레르기 및 인기 추천 키워드 정의
 # -----------------------------------------------------------------------------
 ALLERGY_DICT = {
     "1": "난류", "2": "우유", "3": "메밀", "4": "땅콩", "5": "대두",
@@ -80,36 +79,55 @@ ALLERGY_DICT = {
     "16": "쇠고기", "17": "오징어", "18": "조개류", "19": "잣"
 }
 
-# 학생들이 선호하는 대표 인기 메뉴 키워드 목록 (추천 기능용)
+# 학생 선호 인기 급식 키워드
 POPULAR_KEYWORDS = [
     "돈가스", "돈까스", "치킨", "닭강정", "떡볶이", "마라탕", "스파게티", "파스타",
     "피자", "햄버거", "탕수육", "짜장", "짬뽕", "갈비", "불고기", "삼겹살",
-    "우동", "라멘", "카레", "오므라이스", "아이스크림", "케이크", "وا플", "와플",
+    "우동", "라멘", "카레", "오므라이스", "아이스크림", "케이크", "와플",
     "푸딩", "마카롱", "에이드", "빙수", "소떡소떡"
 ]
 
-def replace_allergy_numbers(menu_text, convert=True):
-    """메뉴 문자열 내 알레르기 번호를 식재료명으로 치환합니다."""
+def clean_and_convert_menu(menu_text, convert_allergy=False):
+    """
+    NEIS 급식 메뉴 텍스트를 안정적으로 정제합니다.
+    - <br/> 태그 처리
+    - 요리명 뒤에 붙는 알레르기 숫자 패턴(예: 1.2.5. 또는 (1.5.13))을 
+      '알레르기 식품명으로 변환' 옵션에 맞춰 안전하게 변환/유지합니다.
+    """
     if not menu_text:
         return ""
-    
-    menu_text = menu_text.replace("<br/>", "\n")
-    if not convert:
-        return menu_text
 
-    def convert_match(match):
-        numbers = re.findall(r'\d+', match.group())
-        converted_names = [ALLERGY_DICT.get(num, num) for num in numbers]
-        return f"({','.join(converted_names)})"
+    # HTML 태그 및 줄바꿈 정제
+    lines = menu_text.replace("<br/>", "\n").replace("<br>", "\n").split("\n")
+    cleaned_lines = []
 
-    lines = menu_text.split('\n')
-    converted_lines = []
     for line in lines:
-        line_converted = re.sub(r'[\d\.]+$', convert_match, line.strip())
-        line_converted = re.sub(r'\([\d\.]+\)', convert_match, line_converted)
-        converted_lines.append(line_converted)
-        
-    return '\n'.join(converted_lines)
+        line = line.strip()
+        if not line:
+            continue
+
+        # 알레르기 숫자를 찾아서 처리하는 내부 함수
+        def process_allergy(match):
+            raw_target = match.group()
+            # 숫자(1~19)만 추출
+            nums = re.findall(r'\b(?:1[0-9]|[1-9])\b', raw_target)
+            if not nums:
+                return raw_target
+            
+            if convert_allergy:
+                # 번호를 식재료 이름으로 변환
+                names = [ALLERGY_DICT.get(n, n) for n in nums]
+                return f" ({','.join(names)})"
+            else:
+                # 숫자 그대로 깔끔하게 원본 유지
+                return f" ({'.'.join(nums)})"
+
+        # 메뉴 끝이나 괄호 안에 있는 알레르기 숫자 패턴만 타겟팅 (예: 1.2.5. 또는 (1.2.5))
+        # 알파벳이나 일반 단어에 영향받지 않도록 숫자와 마침표 조합만 치환
+        processed_line = re.sub(r'\(?[\d\.\s]+\)?$', process_allergy, line)
+        cleaned_lines.append(processed_line)
+
+    return "\n".join(cleaned_lines)
 
 # -----------------------------------------------------------------------------
 # 3. API 데이터 호출 함수
@@ -234,7 +252,7 @@ with recommend_col:
     btn_recommend = st.button("👑 이번 달 특식/인기 메뉴 추천받기", use_container_width=True)
 
 # 💡 추천 급식 날짜 및 메인 요리 분석
-recommended_days = {}  # {ymd_str: [메인 요리명]}
+recommended_days = {}
 for ymd_key, day_meals in meal_dict.items():
     for m_name, dish_str in day_meals.items():
         found_popular = [kw for kw in POPULAR_KEYWORDS if kw in dish_str]
@@ -243,7 +261,6 @@ for ymd_key, day_meals in meal_dict.items():
                 recommended_days[ymd_key] = []
             recommended_days[ymd_key].extend(found_popular)
 
-# 추천 버튼 클릭 시 상단에 팝업/안내 메시지
 if btn_recommend:
     if recommended_days:
         st.balloons()
@@ -266,7 +283,6 @@ try:
     month_days = cal.monthdayscalendar(selected_year, selected_month)
     weekday_names = ["월", "화", "수", "목", "금"]
 
-    # 검색 결과 안내
     if search_keyword:
         matched_count = sum(
             1 for day_meals in meal_dict.values()
@@ -302,7 +318,7 @@ try:
                             contains_search = True
                             break
                 
-                # 카드 CSS 클래스 결정 (검색 > 추천 > 오늘 순)
+                # 카드 스타일 결정
                 if contains_search:
                     card_class = "day-card search-highlight-card"
                 elif is_recommended:
@@ -344,7 +360,8 @@ try:
                         else:
                             title_class = "meal-title-other"
                             
-                        processed_menu = replace_allergy_numbers(raw_menu, convert_allergy)
+                        # 안전한 메뉴 텍스트 정제 함수 적용
+                        processed_menu = clean_and_convert_menu(raw_menu, convert_allergy)
                         
                         # 검색어가 포함된 경우 노란색 하이라이트
                         if search_keyword and search_keyword.lower() in processed_menu.lower():
