@@ -70,15 +70,8 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
-# 2. 알레르기 및 인기 추천 키워드 정의
+# 2. 인기 추천 키워드 및 메뉴 정제 함수 정의
 # -----------------------------------------------------------------------------
-ALLERGY_DICT = {
-    "1": "난류", "2": "우유", "3": "메밀", "4": "땅콩", "5": "대두",
-    "6": "밀", "7": "고등어", "8": "게", "9": "새우", "10": "돼지고기",
-    "11": "복숭아", "12": "토마토", "13": "아황산류", "14": "호두", "15": "닭고기",
-    "16": "쇠고기", "17": "오징어", "18": "조개류", "19": "잣"
-}
-
 # 학생 선호 인기 급식 키워드
 POPULAR_KEYWORDS = [
     "돈가스", "돈까스", "치킨", "닭강정", "떡볶이", "마라탕", "스파게티", "파스타",
@@ -87,17 +80,15 @@ POPULAR_KEYWORDS = [
     "푸딩", "마카롱", "에이드", "빙수", "소떡소떡"
 ]
 
-def clean_and_convert_menu(menu_text, convert_allergy=False):
+def clean_menu_only_name(menu_text):
     """
-    NEIS 급식 메뉴 텍스트를 안정적으로 정제합니다.
-    - <br/> 태그 처리
-    - 요리명 뒤에 붙는 알레르기 숫자 패턴(예: 1.2.5. 또는 (1.5.13))을 
-      '알레르기 식품명으로 변환' 옵션에 맞춰 안전하게 변환/유지합니다.
+    NEIS 급식 메뉴 텍스트에서 알레르기 번호, 특수문자, 괄호 등을 제거하고 
+    순수 메뉴(요리) 이름만 추출합니다.
     """
     if not menu_text:
         return ""
 
-    # HTML 태그 및 줄바꿈 정제
+    # HTML 줄바꿈 태그 변환
     lines = menu_text.replace("<br/>", "\n").replace("<br>", "\n").split("\n")
     cleaned_lines = []
 
@@ -106,26 +97,17 @@ def clean_and_convert_menu(menu_text, convert_allergy=False):
         if not line:
             continue
 
-        # 알레르기 숫자를 찾아서 처리하는 내부 함수
-        def process_allergy(match):
-            raw_target = match.group()
-            # 숫자(1~19)만 추출
-            nums = re.findall(r'\b(?:1[0-9]|[1-9])\b', raw_target)
-            if not nums:
-                return raw_target
-            
-            if convert_allergy:
-                # 번호를 식재료 이름으로 변환
-                names = [ALLERGY_DICT.get(n, n) for n in nums]
-                return f" ({','.join(names)})"
-            else:
-                # 숫자 그대로 깔끔하게 원본 유지
-                return f" ({'.'.join(nums)})"
-
-        # 메뉴 끝이나 괄호 안에 있는 알레르기 숫자 패턴만 타겟팅 (예: 1.2.5. 또는 (1.2.5))
-        # 알파벳이나 일반 단어에 영향받지 않도록 숫자와 마침표 조합만 치환
-        processed_line = re.sub(r'\(?[\d\.\s]+\)?$', process_allergy, line)
-        cleaned_lines.append(processed_line)
+        # 1. 괄호 안의 내용 제거 (예: (완), (자율) 등)
+        line = re.sub(r'\(.*?\)', '', line)
+        
+        # 2. 알레르기 숫자 및 마침표 패턴 제거 (예: 1.2.5. 또는 1.5.13 등)
+        line = re.sub(r'[\d\.]+', '', line)
+        
+        # 3. 양옆 공백 및 특수기호 정리
+        line = line.strip()
+        
+        if line:
+            cleaned_lines.append(line)
 
     return "\n".join(cleaned_lines)
 
@@ -178,17 +160,6 @@ st.sidebar.title("🏫 학교 및 설정")
 
 office_code = st.sidebar.text_input("시도교육청코드", value="B10")
 school_code = st.sidebar.text_input("표준학교코드", value="7010057")
-
-st.sidebar.markdown("---")
-
-# 기능 옵션 토글
-convert_allergy = st.sidebar.toggle("알레르기 식품명으로 변환", value=False)
-
-# 알레르기 대응표 안내
-with st.sidebar.expander("ℹ️ 알레르기 번호-식재료 대응표"):
-    st.caption("식품위생법에 따른 19가지 알레르기 유발 성분 번호입니다.")
-    for code, name in ALLERGY_DICT.items():
-        st.text(f"{code:2s} : {name}")
 
 # -----------------------------------------------------------------------------
 # 5. 상단 메뉴 설정 (연도, 월, 급식 종류)
@@ -360,8 +331,8 @@ try:
                         else:
                             title_class = "meal-title-other"
                             
-                        # 안전한 메뉴 텍스트 정제 함수 적용
-                        processed_menu = clean_and_convert_menu(raw_menu, convert_allergy)
+                        # 오직 메뉴 이름만 깔끔하게 정제
+                        processed_menu = clean_menu_only_name(raw_menu)
                         
                         # 검색어가 포함된 경우 노란색 하이라이트
                         if search_keyword and search_keyword.lower() in processed_menu.lower():
